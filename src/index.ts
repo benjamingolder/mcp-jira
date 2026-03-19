@@ -234,9 +234,12 @@ app.use(express.json());
 // API-Key Middleware
 app.use((req, res, next) => {
   if (req.path === "/health") return next();
-  if (API_KEY && req.headers["x-api-key"] !== API_KEY) {
-    res.status(401).json({ error: "Unauthorized" });
-    return;
+  if (API_KEY) {
+    const provided = req.headers["x-api-key"] ?? req.query["apikey"];
+    if (provided !== API_KEY) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
   }
   next();
 });

@@ -10,7 +10,7 @@ export async function searchIssues(args: {
     maxResults: String(args.maxResults ?? 20),
     fields: (args.fields ?? ["summary", "status", "assignee", "priority", "issuetype", "created", "updated", "description"]).join(","),
   });
-  return jiraFetch(`/search?${params}`);
+  return jiraFetch(`/search/jql?${params}`);
 }
 
 export async function getIssue(args: { issueKey: string }) {

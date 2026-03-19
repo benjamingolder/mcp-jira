@@ -1,0 +1,14 @@
+services:
+  mcp-jira:
+    image: ghcr.io/benjamingolder/mcp-jira:latest
+    pull_policy: always
+    container_name: mcp-jira
+    environment:
+      JIRA_URL: ${JIRA_URL}
+      JIRA_EMAIL: ${JIRA_EMAIL}
+      JIRA_TOKEN: ${JIRA_TOKEN}
+      API_KEY: ${API_KEY}
+      PORT: 3003
+    ports:
+      - "3003:3003"
+    restart: unless-stopped

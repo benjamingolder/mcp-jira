@@ -27,8 +27,11 @@ export async function entraAuthMiddleware(
   res: Response,
   next: NextFunction
 ): Promise<void> {
+  console.log(`[Auth] ${req.method} ${req.path} | Authorization: ${req.headers.authorization ? "present" : "missing"}`);
+
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) {
+    console.log(`[Auth] Rejected: no Bearer token`);
     res.status(401).json({ error: "Authorization Header fehlt" });
     return;
   }
@@ -48,8 +51,10 @@ export async function entraAuthMiddleware(
       name: (payload.name ?? payload.preferred_username ?? "Unbekannt") as string,
       email: (payload.upn ?? payload.preferred_username ?? "") as string,
     };
+    console.log(`[Auth] OK | oid: ${req.user.oid} | email: ${req.user.email}`);
     next();
-  } catch {
+  } catch (err) {
+    console.log(`[Auth] Token invalid: ${err instanceof Error ? err.message : String(err)}`);
     res.status(401).json({ error: "Ungültiger oder abgelaufener Token" });
   }
 }

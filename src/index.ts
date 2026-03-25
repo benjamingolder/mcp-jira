@@ -10,18 +10,26 @@ import {
   ErrorCode,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
+import { entraAuthMiddleware } from "./entraAuth.js";
+import type { EntraUser } from "./entraAuth.js";
+import { getCredentials, ensureTable } from "./storage.js";
+import { handleSetupGet, handleSetupPost, getSetupUrl } from "./setup.js";
 import { searchIssues, getIssue, getIssueComments, getIssueChangelog } from "./tools/issues.js";
 import { listProjects, getProject, getProjectVersions, getProjectComponents } from "./tools/projects.js";
 import { listBoards, getBoard, listSprints, getSprint, getSprintIssues, getBoardBacklog } from "./tools/boards.js";
+import type { JiraCredentials } from "./auth.js";
 
-const API_KEY = process.env.API_KEY;
 const PORT = parseInt(process.env.PORT ?? "3003");
 
-function createMcpServer(): Server {
+const NOT_CONFIGURED_MSG = (setupUrl: string) =>
+  `Dein Jira-Account ist noch nicht mit dem Copilot-Agenten verbunden.\n\n` +
+  `Bitte öffne diesen Link um deinen Account einzurichten (Link ist 1 Stunde gültig):\n${setupUrl}`;
+
+function createMcpServer(creds: JiraCredentials | null, user: EntraUser): Server {
   const server = new Server(
     {
       name: "jira-mcp",
-      version: "1.0.0",
+      version: "2.0.0",
       title: "Jira",
       description: "MCP Server für Jira (read-only: Issues, Projekte, Boards, Sprints)",
     },
@@ -196,24 +204,30 @@ function createMcpServer(): Server {
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req) => {
+    // Kein Jira-Account verknüpft → Setup-URL zurückgeben
+    if (!creds) {
+      const setupUrl = getSetupUrl(user.oid);
+      return { content: [{ type: "text", text: NOT_CONFIGURED_MSG(setupUrl) }] };
+    }
+
     const { name, arguments: args } = req.params;
     try {
       let result: unknown;
       switch (name) {
-        case "search_issues":        result = await searchIssues(args as any); break;
-        case "get_issue":            result = await getIssue(args as any); break;
-        case "get_issue_comments":   result = await getIssueComments(args as any); break;
-        case "get_issue_changelog":  result = await getIssueChangelog(args as any); break;
-        case "list_projects":        result = await listProjects(args as any); break;
-        case "get_project":          result = await getProject(args as any); break;
-        case "get_project_versions": result = await getProjectVersions(args as any); break;
-        case "get_project_components": result = await getProjectComponents(args as any); break;
-        case "list_boards":          result = await listBoards(args as any); break;
-        case "get_board":            result = await getBoard(args as any); break;
-        case "list_sprints":         result = await listSprints(args as any); break;
-        case "get_sprint":           result = await getSprint(args as any); break;
-        case "get_sprint_issues":    result = await getSprintIssues(args as any); break;
-        case "get_board_backlog":    result = await getBoardBacklog(args as any); break;
+        case "search_issues":          result = await searchIssues(args as any, creds); break;
+        case "get_issue":              result = await getIssue(args as any, creds); break;
+        case "get_issue_comments":     result = await getIssueComments(args as any, creds); break;
+        case "get_issue_changelog":    result = await getIssueChangelog(args as any, creds); break;
+        case "list_projects":          result = await listProjects(args as any, creds); break;
+        case "get_project":            result = await getProject(args as any, creds); break;
+        case "get_project_versions":   result = await getProjectVersions(args as any, creds); break;
+        case "get_project_components": result = await getProjectComponents(args as any, creds); break;
+        case "list_boards":            result = await listBoards(args as any, creds); break;
+        case "get_board":              result = await getBoard(args as any, creds); break;
+        case "list_sprints":           result = await listSprints(args as any, creds); break;
+        case "get_sprint":             result = await getSprint(args as any, creds); break;
+        case "get_sprint_issues":      result = await getSprintIssues(args as any, creds); break;
+        case "get_board_backlog":      result = await getBoardBacklog(args as any, creds); break;
         default:
           throw new McpError(ErrorCode.MethodNotFound, `Unbekanntes Tool: ${name}`);
       }
@@ -227,49 +241,58 @@ function createMcpServer(): Server {
   return server;
 }
 
+// ── Express Setup ──────────────────────────────────────────────────────────────
+
 const app = express();
 app.use(cors());
 app.use(express.json());
-
-// API-Key Middleware
-app.use((req, res, next) => {
-  if (req.path === "/health") return next();
-  if (API_KEY) {
-    const provided = req.headers["x-api-key"] ?? req.query["apikey"];
-    if (provided !== API_KEY) {
-      res.status(401).json({ error: "Unauthorized" });
-      return;
-    }
-  }
-  next();
-});
+app.use(express.urlencoded({ extended: true }));
 
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
+// Setup-Seite (kein Auth nötig, gesichert via HMAC-Token)
+app.get("/setup", handleSetupGet);
+app.post("/setup", handleSetupPost);
+
+// Alle MCP-Endpunkte erfordern Entra ID Auth
+app.use(entraAuthMiddleware);
+
 // Streamable HTTP Transport
 app.all("/mcp", async (req, res) => {
+  const user = req.user!;
+  const creds = await getCredentials(user.oid);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  const server = createMcpServer();
+  const server = createMcpServer(creds, user);
   await server.connect(transport);
   await transport.handleRequest(req, res, req.body);
 });
 
 // SSE Transport (Legacy)
-const sseTransports: Record<string, SSEServerTransport> = {};
+interface SseSession {
+  transport: SSEServerTransport;
+  creds: JiraCredentials | null;
+  user: EntraUser;
+}
+const sseSessions: Record<string, SseSession> = {};
 
 app.get("/sse", async (req, res) => {
+  const user = req.user!;
+  const creds = await getCredentials(user.oid);
   const transport = new SSEServerTransport("/messages", res);
-  sseTransports[transport.sessionId] = transport;
-  const server = createMcpServer();
+  sseSessions[transport.sessionId] = { transport, creds, user };
+  const server = createMcpServer(creds, user);
   await server.connect(transport);
-  res.on("close", () => delete sseTransports[transport.sessionId]);
+  res.on("close", () => delete sseSessions[transport.sessionId]);
 });
 
 app.post("/messages", async (req, res) => {
   const id = req.query.sessionId as string;
-  const transport = sseTransports[id];
-  if (!transport) { res.status(404).send("Session nicht gefunden"); return; }
-  await transport.handlePostMessage(req, res);
+  const session = sseSessions[id];
+  if (!session) { res.status(404).send("Session nicht gefunden"); return; }
+  await session.transport.handlePostMessage(req, res);
 });
 
-app.listen(PORT, () => console.log(`mcp-jira läuft auf Port ${PORT}`));
+// ── Start ──────────────────────────────────────────────────────────────────────
+
+await ensureTable();
+app.listen(PORT, () => console.log(`mcp-jira v2 läuft auf Port ${PORT}`));

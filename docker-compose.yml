@@ -4,10 +4,17 @@ services:
     pull_policy: always
     container_name: mcp-jira
     environment:
-      JIRA_URL: ${JIRA_URL}
-      JIRA_EMAIL: ${JIRA_EMAIL}
-      JIRA_TOKEN: ${JIRA_TOKEN}
-      API_KEY: ${API_KEY}
+      # Entra ID (Azure AD)
+      ENTRA_TENANT_ID: ${ENTRA_TENANT_ID}
+      ENTRA_CLIENT_ID: ${ENTRA_CLIENT_ID}
+      # Azure Table Storage (User-Credentials)
+      AZURE_STORAGE_CONNECTION_STRING: ${AZURE_STORAGE_CONNECTION_STRING}
+      # Verschlüsselung: 64-stelliger Hex-String (openssl rand -hex 32)
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      # Setup-Link Signierung: beliebiger langer String
+      SETUP_SECRET: ${SETUP_SECRET}
+      # Öffentliche URL des Servers (für Setup-Links)
+      APP_URL: ${APP_URL}
       PORT: 3003
     ports:
       - "3003:3003"

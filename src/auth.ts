@@ -1,28 +1,35 @@
-const JIRA_URL = process.env.JIRA_URL!;
-const JIRA_EMAIL = process.env.JIRA_EMAIL!;
-const JIRA_TOKEN = process.env.JIRA_TOKEN!;
-
-if (!JIRA_URL || !JIRA_EMAIL || !JIRA_TOKEN) {
-  throw new Error("JIRA_URL, JIRA_EMAIL und JIRA_TOKEN müssen gesetzt sein.");
+export interface JiraCredentials {
+  baseUrl: string;
+  email: string;
+  token: string;
 }
 
-export const baseUrl = JIRA_URL.replace(/\/$/, "");
+function makeAuthHeaders(creds: JiraCredentials): Record<string, string> {
+  return {
+    Authorization: `Basic ${Buffer.from(`${creds.email}:${creds.token}`).toString("base64")}`,
+    "Content-Type": "application/json",
+    Accept: "application/json",
+  };
+}
 
-export const authHeaders: Record<string, string> = {
-  Authorization: `Basic ${Buffer.from(`${JIRA_EMAIL}:${JIRA_TOKEN}`).toString("base64")}`,
-  "Content-Type": "application/json",
-  Accept: "application/json",
-};
-
-export async function jiraFetch(path: string): Promise<unknown> {
-  const res = await fetch(`${baseUrl}/rest/api/3${path}`, {
-    headers: authHeaders,
+export async function jiraFetch(path: string, creds: JiraCredentials): Promise<unknown> {
+  const res = await fetch(`${creds.baseUrl}/rest/api/3${path}`, {
+    headers: makeAuthHeaders(creds),
   });
-
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Jira API Fehler ${res.status}: ${text}`);
   }
+  return res.json();
+}
 
+export async function jiraAgileFetch(path: string, creds: JiraCredentials): Promise<unknown> {
+  const res = await fetch(`${creds.baseUrl}/rest/agile/1.0${path}`, {
+    headers: makeAuthHeaders(creds),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Jira Agile API Fehler ${res.status}: ${text}`);
+  }
   return res.json();
 }

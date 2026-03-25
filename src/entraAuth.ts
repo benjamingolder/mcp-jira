@@ -54,6 +54,13 @@ export async function entraAuthMiddleware(
     console.log(`[Auth] OK | oid: ${req.user.oid} | email: ${req.user.email}`);
     next();
   } catch (err) {
+    try {
+      const parts = token.split(".");
+      if (parts.length === 3) {
+        const decoded = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+        console.log(`[Auth] Token aud: ${decoded.aud} | iss: ${decoded.iss}`);
+      }
+    } catch {}
     console.log(`[Auth] Token invalid: ${err instanceof Error ? err.message : String(err)}`);
     res.status(401).json({ error: "Ungültiger oder abgelaufener Token" });
   }

@@ -250,7 +250,42 @@ app.use(express.urlencoded({ extended: true }));
 
 app.get("/health", (_req, res) => res.json({ status: "ok" }));
 
-// Setup-Seite (kein Auth nötig, gesichert via HMAC-Token)
+// ── OAuth 2.0 Dynamic Client Registration (DCR) ────────────────────────────────
+// Required by Copilot Studio "Dynamic Discovery Authentication"
+
+const tenantId = process.env.ENTRA_TENANT_ID!;
+const clientId = process.env.ENTRA_CLIENT_ID!;
+const appUrl = process.env.APP_URL!;
+const scope = `api://${clientId}/access`;
+
+app.get("/.well-known/oauth-authorization-server", (_req, res) => {
+  res.json({
+    issuer: `https://login.microsoftonline.com/${tenantId}/v2.0`,
+    authorization_endpoint: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`,
+    token_endpoint: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
+    registration_endpoint: `${appUrl}/register`,
+    scopes_supported: [scope, "openid", "profile", "offline_access"],
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code", "refresh_token"],
+    code_challenge_methods_supported: ["S256"],
+    token_endpoint_auth_methods_supported: ["none"],
+  });
+});
+
+app.post("/register", (_req, res) => {
+  // Static DCR: Entra ID doesn't support true dynamic registration,
+  // so we return our pre-configured app registration's client_id.
+  res.status(201).json({
+    client_id: clientId,
+    client_name: "mcp-jira-client",
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    scope,
+    token_endpoint_auth_method: "none",
+  });
+});
+
+// ── Setup-Seite (kein Auth nötig, gesichert via HMAC-Token) ───────────────────
 app.get("/setup", handleSetupGet);
 app.post("/setup", handleSetupPost);
 

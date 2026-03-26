@@ -281,12 +281,19 @@ const protectedResourceMetadata = {
 // Discovery endpoints – must be reachable without Bearer token (before auth middleware)
 // Copilot Studio appends the MCP path suffix, so we handle both variants.
 app.get(["/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/*"],
-  (_req, res) => res.json(authServerMetadata));
+  (req, res) => {
+    console.log(`[Discovery] oauth-authorization-server hit: ${req.path}`);
+    res.json(authServerMetadata);
+  });
 
 app.get(["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/*"],
-  (_req, res) => res.json(protectedResourceMetadata));
+  (req, res) => {
+    console.log(`[Discovery] oauth-protected-resource hit: ${req.path}`);
+    res.json(protectedResourceMetadata);
+  });
 
-app.post("/register", (_req, res) => {
+app.post("/register", (req, res) => {
+  console.log(`[Discovery] /register hit from ${req.ip}`);
   res.status(201).json({
     client_id: copilotClientId,
     client_name: "mcp-jira-client",

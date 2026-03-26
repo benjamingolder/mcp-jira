@@ -32,7 +32,11 @@ export async function entraAuthMiddleware(
   const authHeader = req.headers.authorization;
   if (!authHeader?.startsWith("Bearer ")) {
     console.log(`[Auth] Rejected: no Bearer token`);
-    res.status(401).json({ error: "Authorization Header fehlt" });
+    const appUrl = process.env.APP_URL ?? "";
+    res
+      .status(401)
+      .set("WWW-Authenticate", `Bearer resource_metadata="${appUrl}/.well-known/oauth-protected-resource"`)
+      .json({ error: "Authorization Header fehlt" });
     return;
   }
 

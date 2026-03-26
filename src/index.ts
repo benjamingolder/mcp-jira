@@ -254,8 +254,9 @@ app.get("/health", (_req, res) => res.json({ status: "ok" }));
 // Required by Copilot Studio "Dynamic Discovery Authentication"
 
 const tenantId = process.env.ENTRA_TENANT_ID!;
-const clientId = process.env.ENTRA_CLIENT_ID!;         // dev-jira-mcp-sp (Ressource/API)
-const copilotClientId = process.env.COPILOT_CLIENT_ID!; // dev-jira-mcp-copilot-sp (OAuth-Client)
+const clientId = process.env.ENTRA_CLIENT_ID!;                 // dev-jira-mcp-sp (Ressource/API)
+const copilotClientId = process.env.COPILOT_CLIENT_ID!;         // dev-jira-mcp-copilot-sp (OAuth-Client)
+const copilotClientSecret = process.env.COPILOT_CLIENT_SECRET!; // Secret für Token-Austausch
 const appUrl = process.env.APP_URL!;
 const scope = `api://${clientId}/access`;
 
@@ -296,11 +297,12 @@ app.post("/register", (req, res) => {
   console.log(`[Discovery] /register hit from ${req.ip}`);
   res.status(201).json({
     client_id: copilotClientId,
+    client_secret: copilotClientSecret,
     client_name: "mcp-jira-client",
     grant_types: ["authorization_code", "refresh_token"],
     response_types: ["code"],
     scope,
-    token_endpoint_auth_method: "none",
+    token_endpoint_auth_method: "client_secret_post",
   });
 });
 

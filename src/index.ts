@@ -254,7 +254,8 @@ app.get("/health", (_req, res) => res.json({ status: "ok" }));
 // Required by Copilot Studio "Dynamic Discovery Authentication"
 
 const tenantId = process.env.ENTRA_TENANT_ID!;
-const clientId = process.env.ENTRA_CLIENT_ID!;
+const clientId = process.env.ENTRA_CLIENT_ID!;         // dev-jira-mcp-sp (Ressource/API)
+const copilotClientId = process.env.COPILOT_CLIENT_ID!; // dev-jira-mcp-copilot-sp (OAuth-Client)
 const appUrl = process.env.APP_URL!;
 const scope = `api://${clientId}/access`;
 
@@ -273,10 +274,10 @@ app.get("/.well-known/oauth-authorization-server", (_req, res) => {
 });
 
 app.post("/register", (_req, res) => {
-  // Static DCR: Entra ID doesn't support true dynamic registration,
-  // so we return our pre-configured app registration's client_id.
+  // Static DCR: returns the pre-configured OAuth client (dev-jira-mcp-copilot-sp)
+  // which has the correct redirect URI registered in Entra ID.
   res.status(201).json({
-    client_id: clientId,
+    client_id: copilotClientId,
     client_name: "mcp-jira-client",
     grant_types: ["authorization_code", "refresh_token"],
     response_types: ["code"],

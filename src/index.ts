@@ -259,23 +259,34 @@ const copilotClientId = process.env.COPILOT_CLIENT_ID!; // dev-jira-mcp-copilot-
 const appUrl = process.env.APP_URL!;
 const scope = `api://${clientId}/access`;
 
-app.get("/.well-known/oauth-authorization-server", (_req, res) => {
-  res.json({
-    issuer: `https://login.microsoftonline.com/${tenantId}/v2.0`,
-    authorization_endpoint: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`,
-    token_endpoint: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
-    registration_endpoint: `${appUrl}/register`,
-    scopes_supported: [scope, "openid", "profile", "offline_access"],
-    response_types_supported: ["code"],
-    grant_types_supported: ["authorization_code", "refresh_token"],
-    code_challenge_methods_supported: ["S256"],
-    token_endpoint_auth_methods_supported: ["none"],
-  });
-});
+const authServerMetadata = {
+  issuer: `https://login.microsoftonline.com/${tenantId}/v2.0`,
+  authorization_endpoint: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/authorize`,
+  token_endpoint: `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
+  registration_endpoint: `${appUrl}/register`,
+  scopes_supported: [scope, "openid", "profile", "offline_access"],
+  response_types_supported: ["code"],
+  grant_types_supported: ["authorization_code", "refresh_token"],
+  code_challenge_methods_supported: ["S256"],
+  token_endpoint_auth_methods_supported: ["none"],
+};
+
+const protectedResourceMetadata = {
+  resource: appUrl,
+  authorization_servers: [`https://login.microsoftonline.com/${tenantId}/v2.0`],
+  scopes_supported: [scope],
+  bearer_methods_supported: ["header"],
+};
+
+// Discovery endpoints – must be reachable without Bearer token (before auth middleware)
+// Copilot Studio appends the MCP path suffix, so we handle both variants.
+app.get(["/.well-known/oauth-authorization-server", "/.well-known/oauth-authorization-server/*"],
+  (_req, res) => res.json(authServerMetadata));
+
+app.get(["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/*"],
+  (_req, res) => res.json(protectedResourceMetadata));
 
 app.post("/register", (_req, res) => {
-  // Static DCR: returns the pre-configured OAuth client (dev-jira-mcp-copilot-sp)
-  // which has the correct redirect URI registered in Entra ID.
   res.status(201).json({
     client_id: copilotClientId,
     client_name: "mcp-jira-client",

@@ -43,12 +43,22 @@ export async function entraAuthMiddleware(
   const token = authHeader.slice(7);
   try {
     const { payload } = await jwtVerify(token, JWKS, {
-      audience: `api://${clientId}`,
       issuer: [
         `https://login.microsoftonline.com/${tenantId}/v2.0`,
         `https://sts.windows.net/${tenantId}/`,
       ],
     });
+
+    // Accept audience in various formats (api://clientId, clientId, v1/v2 tokens)
+    const audList = Array.isArray(payload.aud) ? payload.aud : [payload.aud ?? ""];
+    const audOk = audList.some(a =>
+      a === `api://${clientId}` ||
+      a === clientId ||
+      a.includes(clientId)
+    );
+    if (!audOk) {
+      throw new Error(`unexpected "aud" claim value: ${JSON.stringify(payload.aud)}`);
+    }
 
     req.user = {
       oid: payload.oid as string,

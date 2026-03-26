@@ -13,11 +13,13 @@ import {
 import { entraAuthMiddleware } from "./entraAuth.js";
 import type { EntraUser } from "./entraAuth.js";
 import { getCredentials, ensureTable } from "./storage.js";
-import { handleSetupGet, handleSetupPost, getSetupUrl } from "./setup.js";
+import { handleSetupGet, handleSetupCallback, getSetupUrl } from "./setup.js";
 import { searchIssues, getIssue, getIssueComments, getIssueChangelog } from "./tools/issues.js";
 import { listProjects, getProject, getProjectVersions, getProjectComponents } from "./tools/projects.js";
 import { listBoards, getBoard, listSprints, getSprint, getSprintIssues, getBoardBacklog } from "./tools/boards.js";
-import type { JiraCredentials } from "./auth.js";
+import type { JiraCredentials, JiraOAuthCredentials } from "./auth.js";
+import { refreshAtlassianToken } from "./auth.js";
+import { saveOAuthCredentials } from "./storage.js";
 
 const PORT = parseInt(process.env.PORT ?? "3003");
 
@@ -25,7 +27,28 @@ const NOT_CONFIGURED_MSG = (setupUrl: string) =>
   `Dein Jira-Account ist noch nicht mit dem Copilot-Agenten verbunden.\n\n` +
   `Bitte öffne diesen Link um deinen Account einzurichten (Link ist 1 Stunde gültig):\n${setupUrl}`;
 
-function createMcpServer(creds: JiraCredentials | null, user: EntraUser): Server {
+async function getValidCredentials(
+  userId: string
+): Promise<JiraCredentials | JiraOAuthCredentials | null> {
+  const creds = await getCredentials(userId);
+  if (!creds || !("cloudId" in creds)) return creds;
+
+  // Refresh token if expired (or expires within 5 minutes)
+  if (creds.expiresAt - Date.now() < 5 * 60 * 1000) {
+    try {
+      const refreshed = await refreshAtlassianToken(creds.refreshToken);
+      const updated: JiraOAuthCredentials = { ...creds, ...refreshed };
+      await saveOAuthCredentials(userId, updated);
+      return updated;
+    } catch (err) {
+      console.error(`[Auth] Token-Refresh fehlgeschlagen: ${err}`);
+      return null;
+    }
+  }
+  return creds;
+}
+
+function createMcpServer(creds: JiraCredentials | JiraOAuthCredentials | null, user: EntraUser): Server {
   const server = new Server(
     {
       name: "jira-mcp",
@@ -306,9 +329,9 @@ app.post("/register", (req, res) => {
   });
 });
 
-// ── Setup-Seite (kein Auth nötig, gesichert via HMAC-Token) ───────────────────
+// ── Setup & Atlassian OAuth Callback (kein Auth nötig) ────────────────────────
 app.get("/setup", handleSetupGet);
-app.post("/setup", handleSetupPost);
+app.get("/setup/callback", handleSetupCallback);
 
 // Alle MCP-Endpunkte erfordern Entra ID Auth
 app.use(entraAuthMiddleware);
@@ -316,7 +339,7 @@ app.use(entraAuthMiddleware);
 // Streamable HTTP Transport
 app.all("/mcp", async (req, res) => {
   const user = req.user!;
-  const creds = await getCredentials(user.oid);
+  const creds = await getValidCredentials(user.oid);
   const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
   const server = createMcpServer(creds, user);
   await server.connect(transport);
@@ -326,14 +349,14 @@ app.all("/mcp", async (req, res) => {
 // SSE Transport (Legacy)
 interface SseSession {
   transport: SSEServerTransport;
-  creds: JiraCredentials | null;
+  creds: JiraCredentials | JiraOAuthCredentials | null;
   user: EntraUser;
 }
 const sseSessions: Record<string, SseSession> = {};
 
 app.get("/sse", async (req, res) => {
   const user = req.user!;
-  const creds = await getCredentials(user.oid);
+  const creds = await getValidCredentials(user.oid);
   const transport = new SSEServerTransport("/messages", res);
   sseSessions[transport.sessionId] = { transport, creds, user };
   const server = createMcpServer(creds, user);

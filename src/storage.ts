@@ -1,6 +1,6 @@
 import { TableClient, TableServiceClient } from "@azure/data-tables";
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
-import type { JiraCredentials } from "./auth.js";
+import type { JiraCredentials, JiraOAuthCredentials } from "./auth.js";
 
 const TABLE_NAME = "jirausers";
 const PARTITION_KEY = "users";
@@ -42,31 +42,57 @@ export async function ensureTable(): Promise<void> {
   try {
     await serviceClient.createTable(TABLE_NAME);
   } catch {
-    // Tabelle existiert bereits – ignorieren
+    // Tabelle existiert bereits
   }
 }
 
-export async function getCredentials(userId: string): Promise<JiraCredentials | null> {
+export async function getCredentials(
+  userId: string
+): Promise<JiraCredentials | JiraOAuthCredentials | null> {
   try {
-    const entity = await getClient().getEntity<{
-      baseUrl: string;
-      email: string;
-      tokenEncrypted: string;
-    }>(PARTITION_KEY, userId);
+    const entity = await getClient().getEntity<Record<string, string>>(PARTITION_KEY, userId);
+
+    // OAuth credentials
+    if (entity.authType === "oauth") {
+      return {
+        cloudId: entity.cloudId,
+        accessToken: decrypt(entity.accessTokenEncrypted),
+        refreshToken: decrypt(entity.refreshTokenEncrypted),
+        expiresAt: parseInt(entity.expiresAt),
+      } as JiraOAuthCredentials;
+    }
+
+    // Legacy Basic Auth credentials
     return {
       baseUrl: entity.baseUrl,
       email: entity.email,
       token: decrypt(entity.tokenEncrypted),
-    };
+    } as JiraCredentials;
   } catch {
     return null;
   }
+}
+
+export async function saveOAuthCredentials(
+  userId: string,
+  creds: JiraOAuthCredentials
+): Promise<void> {
+  await getClient().upsertEntity({
+    partitionKey: PARTITION_KEY,
+    rowKey: userId,
+    authType: "oauth",
+    cloudId: creds.cloudId,
+    accessTokenEncrypted: encrypt(creds.accessToken),
+    refreshTokenEncrypted: encrypt(creds.refreshToken),
+    expiresAt: String(creds.expiresAt),
+  });
 }
 
 export async function saveCredentials(userId: string, creds: JiraCredentials): Promise<void> {
   await getClient().upsertEntity({
     partitionKey: PARTITION_KEY,
     rowKey: userId,
+    authType: "basic",
     baseUrl: creds.baseUrl,
     email: creds.email,
     tokenEncrypted: encrypt(creds.token),

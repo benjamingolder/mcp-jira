@@ -1,10 +1,16 @@
 import { createHmac, timingSafeEqual } from "crypto";
 import type { Request, Response } from "express";
-import { saveCredentials } from "./storage.js";
+import { saveOAuthCredentials } from "./storage.js";
+import type { JiraOAuthCredentials } from "./auth.js";
 
 const SETUP_SECRET = process.env.SETUP_SECRET!;
 const APP_URL = process.env.APP_URL!;
+const ATLASSIAN_CLIENT_ID = process.env.ATLASSIAN_CLIENT_ID!;
+const ATLASSIAN_CLIENT_SECRET = process.env.ATLASSIAN_CLIENT_SECRET!;
 const TOKEN_TTL_MS = 60 * 60 * 1000; // 1 Stunde
+
+const CALLBACK_URL = `${APP_URL}/setup/callback`;
+const SCOPES = "read:jira-work read:jira-user offline_access";
 
 export function generateSetupToken(userId: string): string {
   const payload = `${userId}.${Date.now()}`;
@@ -46,86 +52,108 @@ export async function handleSetupGet(req: Request, res: Response): Promise<void>
     return;
   }
 
-  res.send(formPage(token));
+  // Encode userId in state (HMAC-signed)
+  const state = Buffer.from(JSON.stringify({ userId, ts: Date.now() })).toString("base64url");
+  const sig = createHmac("sha256", SETUP_SECRET).update(state).digest("hex");
+  const signedState = `${state}.${sig}`;
+
+  const authUrl = new URL("https://auth.atlassian.com/authorize");
+  authUrl.searchParams.set("audience", "api.atlassian.com");
+  authUrl.searchParams.set("client_id", ATLASSIAN_CLIENT_ID);
+  authUrl.searchParams.set("scope", SCOPES);
+  authUrl.searchParams.set("redirect_uri", CALLBACK_URL);
+  authUrl.searchParams.set("state", signedState);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("prompt", "consent");
+
+  res.redirect(authUrl.toString());
 }
 
-export async function handleSetupPost(req: Request, res: Response): Promise<void> {
-  const { token, baseUrl, email, apiToken } = req.body as Record<string, string>;
-  const userId = token ? verifySetupToken(token) : null;
+export async function handleSetupCallback(req: Request, res: Response): Promise<void> {
+  const { code, state, error } = req.query as Record<string, string>;
 
-  if (!userId) {
-    res.status(400).send(errorPage("Ungültiger oder abgelaufener Link."));
+  if (error) {
+    res.status(400).send(errorPage(`Atlassian Login fehlgeschlagen: ${error}`));
     return;
   }
 
-  if (!baseUrl || !email || !apiToken) {
-    res.status(400).send(errorPage("Alle Felder sind erforderlich."));
+  if (!code || !state) {
+    res.status(400).send(errorPage("Ungültige Callback-Parameter."));
     return;
   }
 
-  const cleanUrl = baseUrl.replace(/\/$/, "");
-  const testRes = await fetch(`${cleanUrl}/rest/api/3/myself`, {
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${email}:${apiToken}`).toString("base64")}`,
-      Accept: "application/json",
-    },
+  // Verify state signature
+  const dotIdx = state.lastIndexOf(".");
+  const stateBody = state.slice(0, dotIdx);
+  const stateSig = state.slice(dotIdx + 1);
+  const expectedSig = createHmac("sha256", SETUP_SECRET).update(stateBody).digest("hex");
+  if (stateSig !== expectedSig) {
+    res.status(400).send(errorPage("Ungültiger State-Parameter."));
+    return;
+  }
+
+  let userId: string;
+  try {
+    const parsed = JSON.parse(Buffer.from(stateBody, "base64url").toString("utf8"));
+    userId = parsed.userId;
+    if (Date.now() - parsed.ts > TOKEN_TTL_MS) throw new Error("expired");
+  } catch {
+    res.status(400).send(errorPage("Abgelaufener oder ungültiger State."));
+    return;
+  }
+
+  // Exchange code for tokens
+  const tokenRes = await fetch("https://auth.atlassian.com/oauth/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      grant_type: "authorization_code",
+      client_id: ATLASSIAN_CLIENT_ID,
+      client_secret: ATLASSIAN_CLIENT_SECRET,
+      code,
+      redirect_uri: CALLBACK_URL,
+    }),
   });
 
-  if (!testRes.ok) {
-    res.status(400).send(errorPage("Jira-Zugangsdaten ungültig. Bitte prüfe URL, E-Mail und API-Token."));
+  if (!tokenRes.ok) {
+    const err = await tokenRes.text();
+    console.error(`[Setup] Token-Exchange fehlgeschlagen: ${err}`);
+    res.status(500).send(errorPage("Token-Exchange fehlgeschlagen. Bitte versuche es erneut."));
     return;
   }
 
-  await saveCredentials(userId, { baseUrl: cleanUrl, email, token: apiToken });
-  res.send(successPage());
-}
+  const tokenData = await tokenRes.json() as any;
 
-function formPage(token: string): string {
-  return `<!DOCTYPE html>
-<html lang="de">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Jira MCP – Einrichtung</title>
-  <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: "Segoe UI", -apple-system, sans-serif; background: #f3f4f6; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 1rem; }
-    .card { background: #fff; border-radius: 12px; padding: 2rem; width: 100%; max-width: 460px; box-shadow: 0 4px 12px rgba(0,0,0,.08); }
-    .logo { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1.5rem; }
-    .logo-icon { width: 32px; height: 32px; background: #0052cc; border-radius: 6px; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 1rem; }
-    h1 { font-size: 1.25rem; color: #111827; margin-bottom: 0.4rem; }
-    .subtitle { color: #6b7280; font-size: 0.875rem; margin-bottom: 1.75rem; line-height: 1.5; }
-    label { display: block; font-size: 0.8rem; font-weight: 600; color: #374151; margin-bottom: 0.3rem; text-transform: uppercase; letter-spacing: .03em; }
-    input { width: 100%; padding: 0.6rem 0.75rem; border: 1.5px solid #e5e7eb; border-radius: 8px; font-size: 0.9rem; margin-bottom: 1.1rem; outline: none; transition: border-color .15s, box-shadow .15s; color: #111; }
-    input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,.15); }
-    .hint { font-size: 0.75rem; color: #9ca3af; margin-top: -0.8rem; margin-bottom: 1.1rem; }
-    .hint a { color: #6366f1; text-decoration: none; }
-    button { width: 100%; padding: 0.7rem; background: #6366f1; color: white; border: none; border-radius: 8px; font-size: 0.95rem; font-weight: 600; cursor: pointer; transition: background .15s; }
-    button:hover { background: #4f46e5; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="logo">
-      <div class="logo-icon">J</div>
-      <span style="font-weight:600;color:#111">Jira MCP</span>
-    </div>
-    <h1>Jira-Account verbinden</h1>
-    <p class="subtitle">Verbinde deinen persönlichen Jira-Account mit dem Copilot-Agenten. Deine Zugangsdaten werden verschlüsselt gespeichert.</p>
-    <form method="POST" action="/setup">
-      <input type="hidden" name="token" value="${token}">
-      <label>Jira URL</label>
-      <input type="url" name="baseUrl" placeholder="https://deine-firma.atlassian.net" required>
-      <label>E-Mail</label>
-      <input type="email" name="email" placeholder="name@firma.ch" required>
-      <label>API-Token</label>
-      <input type="password" name="apiToken" required>
-      <p class="hint">Token erstellen: <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank">id.atlassian.com → Sicherheit → API-Tokens</a></p>
-      <button type="submit">Verbindung speichern</button>
-    </form>
-  </div>
-</body>
-</html>`;
+  // Get accessible Jira cloud instances
+  const resourceRes = await fetch("https://api.atlassian.com/oauth/token/accessible-resources", {
+    headers: { Authorization: `Bearer ${tokenData.access_token}`, Accept: "application/json" },
+  });
+
+  if (!resourceRes.ok) {
+    res.status(500).send(errorPage("Jira-Instanz konnte nicht abgerufen werden."));
+    return;
+  }
+
+  const resources = await resourceRes.json() as any[];
+  if (!resources.length) {
+    res.status(400).send(errorPage("Kein Jira-Zugang gefunden. Stelle sicher dass du Zugriff auf mindestens eine Jira-Instanz hast."));
+    return;
+  }
+
+  // Use first available Jira cloud instance
+  const cloudId = resources[0].id;
+
+  const creds: JiraOAuthCredentials = {
+    cloudId,
+    accessToken: tokenData.access_token,
+    refreshToken: tokenData.refresh_token ?? "",
+    expiresAt: Date.now() + (tokenData.expires_in ?? 3600) * 1000,
+  };
+
+  await saveOAuthCredentials(userId, creds);
+  console.log(`[Setup] OAuth erfolgreich für userId: ${userId}, cloudId: ${cloudId}`);
+
+  res.send(successPage());
 }
 
 function successPage(): string {
@@ -145,7 +173,7 @@ function successPage(): string {
 <body>
   <div class="card">
     <div class="icon">✅</div>
-    <h1>Verbindung hergestellt!</h1>
+    <h1>Jira erfolgreich verbunden!</h1>
     <p>Dein Jira-Account ist jetzt mit dem Copilot-Agenten verbunden.<br>Du kannst dieses Fenster schliessen.</p>
   </div>
 </body>

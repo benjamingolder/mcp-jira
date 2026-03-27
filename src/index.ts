@@ -324,7 +324,7 @@ app.post("/register", (req, res) => {
     client_name: "mcp-jira-client",
     grant_types: ["authorization_code", "refresh_token"],
     response_types: ["code"],
-    scope,
+    scope: `${scope} offline_access`,
     token_endpoint_auth_method: "client_secret_post",
   });
 });

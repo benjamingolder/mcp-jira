@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { randomUUID } from "node:crypto";
 import express from "express";
 import cors from "cors";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -9,6 +10,7 @@ import {
   CallToolRequestSchema,
   ErrorCode,
   McpError,
+  isInitializeRequest,
 } from "@modelcontextprotocol/sdk/types.js";
 import { entraAuthMiddleware } from "./entraAuth.js";
 import type { EntraUser } from "./entraAuth.js";
@@ -336,14 +338,51 @@ app.get("/setup/callback", handleSetupCallback);
 // Alle MCP-Endpunkte erfordern Entra ID Auth
 app.use(entraAuthMiddleware);
 
-// Streamable HTTP Transport
+// Streamable HTTP Transport – stateful session management
+interface McpSession {
+  transport: StreamableHTTPServerTransport;
+}
+const mcpSessions: Record<string, McpSession> = {};
+
 app.all("/mcp", async (req, res) => {
   const user = req.user!;
-  const creds = await getValidCredentials(user.oid);
-  const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
-  const server = createMcpServer(creds, user);
-  await server.connect(transport);
-  await transport.handleRequest(req, res, req.body);
+
+  // Existing session: route request to stored transport
+  const sessionId = req.headers["mcp-session-id"] as string | undefined;
+  if (sessionId && mcpSessions[sessionId]) {
+    await mcpSessions[sessionId].transport.handleRequest(req, res, req.body);
+    return;
+  }
+
+  // New initialize request: create a fresh session
+  if (!sessionId && isInitializeRequest(req.body)) {
+    const creds = await getValidCredentials(user.oid);
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: () => randomUUID(),
+      onsessioninitialized: (sid) => {
+        console.log(`[MCP] Session initialized: ${sid} | user: ${user.oid}`);
+        mcpSessions[sid] = { transport };
+      },
+    });
+    transport.onclose = () => {
+      const sid = transport.sessionId;
+      if (sid && mcpSessions[sid]) {
+        console.log(`[MCP] Session closed: ${sid}`);
+        delete mcpSessions[sid];
+      }
+    };
+    const server = createMcpServer(creds, user);
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+    return;
+  }
+
+  // Invalid request
+  res.status(400).json({
+    jsonrpc: "2.0",
+    error: { code: -32000, message: "Bad Request: missing or unknown session ID" },
+    id: null,
+  });
 });
 
 // SSE Transport (Legacy)

@@ -355,7 +355,8 @@ app.all("/mcp", async (req, res) => {
   }
 
   // New initialize request: create a fresh session
-  if (!sessionId && isInitializeRequest(req.body)) {
+  // Also handles stale session IDs after container restart (Scale-to-Zero)
+  if (isInitializeRequest(req.body)) {
     const creds = await getValidCredentials(user.oid);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: () => randomUUID(),
